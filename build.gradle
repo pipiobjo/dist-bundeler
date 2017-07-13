@@ -1,0 +1,607 @@
+/**
+ * Gradle Scripts um Liferay und Tomcat Anpassungen zu behandeln
+ * TODO: 
+ * - Plattformunabhängigkeit sicherstellen
+ */
+
+
+
+/**
+ * Plugin Repositories
+ */
+buildscript {
+
+	repositories {
+		maven { url "http://lxbld01e.gavi-intra.de:8081/nexus/content/groups/portal/" }
+		maven { url "http://lxbld01e.gavi-intra.de:8081/nexus/content/repositories/portal3rdParty/" }
+		maven { url "http://lxbld01e.gavi-intra.de:8081/nexus/content/repositories/portalTools/" }
+	}
+}
+/**
+ * Global Imports
+ **/
+import java.io.File
+
+//apply plugins
+apply plugin: 'maven'
+apply plugin: 'distribution'
+
+
+repositories {
+	maven { url "http://lxbld01e.gavi-intra.de:8081/nexus/content/groups/portal/" }
+	maven { url "http://cdn.repository.liferay.com/nexus/content/groups/public" }
+	maven { url "http://lxbld01e.gavi-intra.de:8081/nexus/content/repositories/portal3rdParty/" }
+	maven { url "https://oss.sonatype.org/content/repositories/releases" }
+}
+
+ext.tomcatGroupId = "org.apache.tomcat"
+ext.tomcatArtifactId = "tomcat"
+ext.tomcatBundleVersion = "8.5.15"
+ext.tomcatBundleNameLocal = "apache-tomcat-8.5.15.zip"
+ext.liferayTomcatBundleVersion = "7.0-sp3"
+ext.liferayTomcatGroupId = "com.liferay.tools.tomcat"
+ext.liferayTomcatArtifactId = "liferay-dxp-digital-enterprise-tomcat"
+ext.liferayBundleNameLocal = "liferay-dxp-digital-enterprise-tomcat-7.0-sp3-20170503123037723.zip"
+
+ext.buildTempDir = "$projectDir"+ File.separatorChar +"temp"
+ext.liferayDistDir = "$buildDir" + File.separatorChar + "liferay-dist"
+
+configurations { liferayUploadZip }
+artifacts{
+	liferayUploadZip file: file("$projectDir" + File.separatorChar + "uploads" + File.separatorChar + "liferay-service-packs" + File.separatorChar + "${liferayBundleNameLocal}")
+}
+
+/**
+ *
+ * lädt plain liferay (service pack im nexus hoch)
+ **/
+task uploadPlainLiferaySP(type: Upload) {
+	configuration = configurations.liferayUploadZip
+	repositories {
+		mavenDeployer {
+			repository(url: "${nexusUrl}/content/repositories/portalTools/") {
+				authentication(
+						userName: nexusUsername,
+						password: nexusPassword)
+			}
+			pom.version = "$liferayTomcatBundleVersion"
+			pom.groupId = "$liferayTomcatGroupId"
+			pom.artifactId = "liferayTomcatArtifactId"
+		}
+	}
+}
+
+configurations { tomcatUploadZip }
+artifacts{
+	tomcatUploadZip file: file("$projectDir"+ File.separatorChar + "uploads" + File.separatorChar + "tomcat" + File.separatorChar + "${tomcatBundleNameLocal}")
+}
+
+/**
+ *
+ * lädt plain liferay (service pack im nexus hoch)
+ **/
+task uploadTomcatBundle(type: Upload) {
+	configuration = configurations.tomcatUploadZip
+	repositories {
+		mavenDeployer {
+			repository(url: "${nexusUrl}/content/repositories/portalReleases/") {
+				authentication(
+						userName: nexusUsername,
+						password: nexusPassword)
+			}
+			snapshotRepository(url: "${nexusUrl}/content/repositories/portalSnapshots/") {
+				authentication(
+						userName: nexusUsername,
+						password: nexusPassword)
+			}
+			pom.version = "$tomcatBundleVersion"
+			pom.groupId = "$tomcatGroupId"
+			pom.artifactId = "$tomcatArtifactId"
+		}
+	}
+}
+
+/**
+ *
+ * findet tomcat home ordner
+ * returns the file object of catalina home 
+ **/
+ext.findCatalinaHomeInLiferay = {
+	->
+	def File result = null
+	file("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar).eachDirMatch(~/.*tomcat.*/) { result = it }
+	return result
+}
+
+
+configurations { liferayBundleZip }
+dependencies{ liferayBundleZip "$liferayTomcatGroupId:$liferayTomcatArtifactId:$liferayTomcatBundleVersion@zip" }
+
+/**
+ *  
+ */
+task cleanBuildTempDir {
+	doLast {
+		def File buildDirPath = new File("$buildTempDir")
+		buildDirPath.deleteDir()
+	}
+}
+
+/**
+ *
+ * Downloads liferay bundle Zip
+ * Unzip to liferay-temp
+ * And copy liferay-temp/* to liferay
+ * 
+ **/
+task explodeLiferayBundle{
+	dependsOn tasks.cleanBuildTempDir
+	doLast {
+		def File liferayTempBundlePath = new File("$buildTempDir" + File.separatorChar + "liferay-temp")
+		def File liferayBundlePath = new File("$buildTempDir" + File.separatorChar + "liferay")
+		copy{
+			from(zipTree(configurations.liferayBundleZip.singleFile))
+			into liferayTempBundlePath
+		}
+
+		def rootZipDir = liferayTempBundlePath.listFiles()[0]
+		fileTree(rootZipDir){
+		}.copy { into liferayBundlePath }
+
+		//TODO warum wartet löschen nicht auf erfolgreiches kopieren?
+		//liferayTempBundlePath.deleteDir()
+	}
+}
+
+
+
+
+
+/**
+ *
+ * Aktualisiert nur das patching tool
+ * 
+ **/
+task patchingToolUpdate {
+	dependsOn tasks.explodeLiferayBundle
+	doLast {
+		def File patchingToolPath = new File("$projectDir"+ File.separatorChar + "uploads" + File.separatorChar + "patching-tool")
+		String[] patchingToolFile = patchingToolPath.list();
+		if(patchingToolFile.length == 1){
+			def File oldPatchingToolFile = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool" )
+			oldPatchingToolFile.deleteDir()
+			sleep(15 * 1000)
+			def File liferayBundlePath = new File("$buildTempDir" + File.separatorChar + "liferay")
+			copy{
+				from(zipTree(patchingToolPath.listFiles()[0]))
+				into liferayBundlePath
+			}
+		} else if(patchingToolFile.length > 1) {
+			throw new GradleException('Es gibt mehr als eine Datei im uploads/patching-tool Ordner. Es darf nur eine Version vom Patching-Tool existieren')
+		} else {
+			println ("Skipping update patching tool. uploads/patching-tool Ordner ist leer")
+		}
+	}
+}
+
+/**
+ * 
+ * auto discovery patching tool. Erstellt die Datei default.properties in liferay.home/patching-tool neue. 
+ * Dies ist nötig wenn der Pfad zu tomcat home geändert wurde. default.properties wird zum laufen vom patching-tool gebraucht
+ **/
+task patchingToolAutoDiscovery {
+	dependsOn tasks.patchingToolUpdate
+	doLast {
+		println ("patchingToolAutoDiscovery - workingDir=$buildTempDir")
+		exec {
+			workingDir "$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool"
+			//on windows:
+			commandLine 'cmd', '/c', 'patching-tool.bat auto-discovery'
+		}
+		println ("Waiting 7 sec for auto discovery patching tool")
+		sleep(7 * 1000)
+	}
+}
+
+/**
+ *
+ * Kopiert fixpacks vom Ordner uploads/liferay-fix-packs into temp/liferay/patching-tool/patches
+ **/
+task copyFixPacksToLiferay{
+	dependsOn tasks.patchingToolUpdate
+	doLast {
+		copy {
+			println("Copying fixpacks von " + "$projectDir"+ File.separatorChar + "uploads" + File.separatorChar + "liferay-fix-packs" + " nach " + "$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool" + File.separatorChar + "patches")
+			into("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool" + File.separatorChar + "patches")
+			from("$projectDir"+ File.separatorChar + "uploads" + File.separatorChar + "liferay-fix-packs")
+			include('**/*.zip')
+		}
+	}
+}
+
+/**
+ *
+ * Installiert fixpacks vom Ordner temp/liferay/patching-tool/patches
+ **/
+task patchingToolExecuteInstall {
+	dependsOn tasks.patchingToolAutoDiscovery
+	dependsOn tasks.copyFixPacksToLiferay
+	doLast {
+		def File patchesDir = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool" + File.separatorChar + "patches")
+		String[] patches = patchesDir.list()
+		println("Patches ordner hat " + patches.length + " patches")
+		if (patches.length > 0) {
+			exec {
+				workingDir "$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool"
+				//on windows:
+				commandLine 'cmd', '/c', 'patching-tool.bat install'
+			}
+		} else {
+			println ("patches directory is empty. Skipping install fixpacks")
+		}
+	}
+}
+
+
+
+/**
+ *
+ * macht backup vom catalina.properties und speichert es im temp/backup
+ **/
+task backupCatalinaProperties{
+	dependsOn tasks.explodeLiferayBundle
+	dependsOn tasks.patchingToolExecuteInstall
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		copy {
+			from(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "conf")
+			into("$buildTempDir" + File.separatorChar + "backup")
+			include('catalina.properties')
+		}
+	}
+}
+
+/**
+ *
+ * macht backup vom ROOT folder und speichert es im temp
+ **/
+task backupROOTFolder{
+	dependsOn tasks.patchingToolExecuteInstall
+	dependsOn tasks.explodeLiferayBundle
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		copy {
+			from(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "webapps")
+			into("$buildTempDir" + File.separatorChar + "backup")
+		}
+	}
+}
+
+/**
+ *
+ * macht backup vom ext folder und speichert es im temp
+ **/
+task backupExtFolder{
+	dependsOn tasks.explodeLiferayBundle
+	dependsOn tasks.patchingToolExecuteInstall
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		copy {
+			from(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "lib")
+			into("$buildTempDir" + File.separatorChar + "backup")
+			include('ext/**')
+		}
+	}
+}
+
+/**
+ *
+ * Task für das Ausführen von mehreren Backup tasks
+ **/
+task backupAllLiferayTomcatFiles{
+	dependsOn tasks.backupExtFolder
+	dependsOn tasks.backupCatalinaProperties
+	dependsOn tasks.backupROOTFolder
+}
+
+/**
+ *
+ * löscht den Tomcat-Ordner aus Liferay
+ **/
+task deleteOldTomcatInLiferay {
+	dependsOn tasks.backupAllLiferayTomcatFiles
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		println ("Deleting old home ordner " + tomcatHomeOrdner.getAbsolutePath())
+		tomcatHomeOrdner.deleteDir()
+	}
+}
+
+configurations { tomcatDist }
+dependencies { tomcatDist  "org.apache.tomcat:tomcat:$tomcatBundleVersion@zip" }
+
+/**
+ *
+ * Downloads tomcat bundle Zip and unzip to buildDir/liferay/../tomcat
+ **/
+task explodeTomcatBundle {
+	dependsOn configurations.tomcatDist
+	dependsOn tasks.deleteOldTomcatInLiferay
+	doLast{
+		def File tomcatBundlePath = new File("$buildTempDir" + File.separatorChar + "liferay")
+		copy {
+			from(zipTree(configurations.tomcatDist.singleFile))
+			into tomcatBundlePath
+		}
+		findCatalinaHomeInLiferay().renameTo(new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "$tomcatArtifactId" + "-" + "$tomcatBundleVersion"))
+	}
+}
+
+/**
+ *
+ * löscht den webapps Ordner vom tomcat
+ **/
+task deleteWebappsFolderVomLiferayTomcat {
+	dependsOn tasks.explodeTomcatBundle
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		def File webappsPath = new File(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "webapps")
+		println("Deleting file " + webappsPath.getAbsolutePath())
+		webappsPath.deleteDir()
+	}
+}
+
+
+/**
+ *
+ * kopiert alle liferay-tomcat files ins neue tomcat bundle
+ **/
+task copyAllLiferayFilesToTomcat {
+	dependsOn tasks.deleteWebappsFolderVomLiferayTomcat
+	doLast {
+
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+
+		copy {
+			into(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "conf")
+			from("$buildTempDir" + File.separatorChar + "backup")
+			include('catalina.properties')
+		}
+
+		copy {
+			into(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "webapps")
+			from("$buildTempDir" + File.separatorChar + "backup")
+			include('ROOT/**')
+		}
+
+		copy {
+			into(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "lib")
+			from("$buildTempDir" + File.separatorChar + "backup")
+			include('ext/**')
+		}
+
+		copy{
+			from("$projectDir"+ File.separatorChar + 'uploads')
+			into(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "bin")
+			include('setenv.bat')
+		}
+
+		copy{
+			from("$projectDir"+ File.separatorChar + 'uploads')
+			into(tomcatHomeOrdner.getParentFile().getAbsolutePath())
+			include('portal-ext.properties')
+		}
+	}
+}
+
+
+
+/**
+ *
+ * update patching-tool configurations.
+ **/
+task updateProfileForPatchingTool {
+	doLast {
+		File patchingToolOldProfile = new File("temp" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool" + File.separatorChar + "default.properties")
+		patchingToolOldProfile.delete()
+		exec {
+			workingDir "$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "patching-tool"
+			//on windows:
+			commandLine 'cmd', '/c', 'patching-tool.bat auto-discovery'
+		}
+	}
+}
+
+
+
+/**
+ *
+ * löscht nicht benötigte LPKG-Dateien
+ **/
+task deleteUnwantedLpkg {
+	doLast{
+		File marketplaceFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "osgi" + File.separatorChar + "marketplace")
+		def namesOfUnwantedLpkgs = [
+			"Liferay Documentum Connector.lpkg",
+			"Liferay IP Geocoder.lpkg",
+			"Liferay Sharepoint Connector.lpkg",
+			"Liferay Sync Connector.lpkg"
+		]
+		def a = 1;
+		namesOfUnwantedLpkgs.each() {
+			File lpkgFile = new File(marketplaceFolder.getAbsolutePath() + File.separatorChar + it)
+			println("deleting file " + lpkgFile.getAbsolutePath())
+			lpkgFile.delete()
+			a++;
+		}
+	}
+}
+
+
+/**
+ *
+ * aktualisert die LPKGS. Die neue LPKGS müssen im Ordner uploads/lpkg/marketplace existieren
+ **/
+task upgradeLPKGS {
+	doLast {
+		File marketplaceFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "osgi" + File.separatorChar + "marketplace")
+		copy{
+			from("$projectDir"+ File.separatorChar + 'uploads' + File.separatorChar + 'lpkg' + File.separatorChar + 'marketplace')
+			into(marketplaceFolder)
+			include('**/*.lpkg')
+		}
+	}
+}
+
+/**
+ *
+ * Startet das aktualisierte tomcat nach dem Upgrade
+ **/
+task startUpgradedTomcat{
+	dependsOn tasks.deleteUnwantedLpkg
+	dependsOn tasks.updateProfileForPatchingTool
+	dependsOn tasks.copyAllLiferayFilesToTomcat
+	dependsOn tasks.upgradeLPKGS
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		println ("Starting Tomcat in " + tomcatHomeOrdner.getAbsolutePath())
+		exec {
+			workingDir tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "bin"
+			//	on windows:
+			commandLine 'cmd', '/c', 'startup.bat'
+		}
+	}
+}
+
+/**
+ *
+ * Task macht folgendes:
+ * 1- explodeLiferayBundle
+ * 2- backupAllLiferayTomcatFiles
+ * 3- deleteOldTomcatInLiferay
+ * 4- unzipNeuesTomcatBundle
+ * 5- deleteWebappsFolderVomLiferayTomcat
+ * 6- copyAllLiferayFilesToTomcat
+ * 7- start tomcat für testen
+ **/
+task installLiferaypatchingToolExecuteInstallUpgradeAndStartTomcat { dependsOn tasks.startUpgradedTomcat }
+
+/**
+ *
+ * Fährt tomcat runter. DIes ist nöctig um den LiferayTomcatDist sauber zu erstellen.
+ **/
+task shutdownTomcat {
+	doLast {
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		exec {
+			workingDir tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "bin"
+			//on windows:
+			commandLine 'cmd', '/c', 'catalina.bat stop'
+		}
+		println ("Waiting 20 seconds for shutting down tomcat")
+		sleep(20 * 1000)
+	}
+}
+
+/**
+ *
+ * Task löscht die nicht benötigte Dateien für das Zusammenbauen von dem Dist
+ *
+ **/
+task extendLiferayDist {
+	dependsOn tasks.shutdownTomcat
+	dependsOn tasks.clean
+	doLast {
+		File osgiWorkFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "work")
+		println ("Deleting $buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "work directory")
+		osgiWorkFolder.deleteDir()
+		File osgiStateFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "osgi" +  File.separatorChar + "state")
+		println ("Deleting $buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "osgi" +  File.separatorChar + "state directory")
+		osgiStateFolder.deleteDir()
+		File logsFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "logs")
+		println ("Deleting $buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "logs directory")
+		logsFolder.deleteDir()
+		File dataFolder = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "data")
+		println ("Deleting $buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "data directory")
+		dataFolder.deleteDir()
+		def File tomcatHomeOrdner = findCatalinaHomeInLiferay()
+		File tomcatTempFolder = new File(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "temp")
+		println ("Deleting " + tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "temp directory")
+		tomcatTempFolder.deleteDir()
+		File tomcatWorkFolder = new File(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "work")
+		println ("Deleting " + tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "work directory")
+		tomcatWorkFolder.deleteDir()
+		File tomcatLogsFolder = new File(tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "logs")
+		println ("Deleting " + tomcatHomeOrdner.getAbsolutePath() + File.separatorChar + "logs directory")
+		tomcatLogsFolder.deleteDir()
+		File portalExtProperties = new File("$buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "portal-ext.properties")
+		println ("Deleting File $buildTempDir" + File.separatorChar + "liferay" + File.separatorChar + "portal-ext.properties")
+		portalExtProperties.delete()
+
+		sleep(10 * 1000)
+		logsFolder.mkdir()
+		tomcatLogsFolder.mkdir()
+		copy {
+			println ("Copying from " + "$buildTempDir" + File.separatorChar +"liferay to " + "$liferayDistDir")
+			into("$liferayDistDir")
+			from("$buildTempDir" + File.separatorChar +"liferay")
+			exclude("**/patching-tool/patches/**")
+		}
+		
+		File patchesFolder = new File("$liferayDistDir" + File.separatorChar + "patching-tool" + File.separatorChar + "patches")
+		patchesFolder.mkdir()
+	}
+}
+
+distZip.dependsOn tasks.extendLiferayDist
+distTar.dependsOn tasks.extendLiferayDist
+
+/**
+ *
+ * Create a distribution zip file
+ *
+ **/
+project.configurations.archives.artifacts.clear() // remove default zip and tar file
+def assemblyZip = file("$buildDir/distributions/${projectname}.zip")
+artifacts { archives assemblyZip }
+tasks.distTar.enabled = false
+
+distributions {
+	main {
+		contents {
+			from {
+				"$liferayDistDir"
+			}
+			into '/'
+		}
+	}
+}
+
+
+/**
+ *
+ * Uploading the distribution zip file to nexus
+ *
+ **/
+
+uploadArchives {
+	dependsOn tasks.assembleDist
+	repositories {
+		mavenDeployer {
+			repository(url: "${nexusUrl}/content/repositories/portalReleases/") {
+				authentication(
+						userName: nexusUsername,
+						password: nexusPassword)
+			}
+			snapshotRepository(url: "${nexusUrl}/content/repositories/portalSnapshots/") {
+				authentication(
+						userName: nexusUsername,
+						password: nexusPassword)
+			}
+			pom.version = projectversion
+			pom.groupId = projectgroup
+			pom.artifactId = projectname
+
+		}
+	}
+}
